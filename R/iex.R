@@ -1,4 +1,8 @@
-# API ---------------------------------------------------------------------
+
+# Base API Methods ------------------------------------------------------------
+
+# TODO: these will need to be customizable when IEX introduces its IEX Cloud API.
+
 iex_user_agent <- function() {
   httr::user_agent("Rpackage")
 }
@@ -11,6 +15,15 @@ iex_endpoint <- function(path, version = "1.0") {
   httr::modify_url(iex_base(), path = paste0(version, "/", path))
 }
 
+#' Base method that sends an HTTP GET request to the REST endpoint.  This returns
+#' an S3 object of class `iex_api` which has three accessible fields:
+#' `path`, `response` and `content` containing the API path, the unparsed API
+#' response and the parsed content from the API's response (the latter usually
+#' being a list). Note that this package causes R to pause 0.2 seconds after
+#' executing an API call to avoid the user being throttled by the API (which
+#' enforces a 5 request per second limit)
+#'
+#' @export
 iex_api <- function(path, query = NULL, version = "1.0") {
   # End points throttled: 5 requests per second. Enforce this
   on.exit(Sys.sleep(0.2))
@@ -34,6 +47,126 @@ print.iex_api <- function(x, ...) {
   utils::str(x$content)
   invisible(x)
 }
+
+#' Converts a list of lists to a data.frame. This helps parse the typical
+#' response$content list returned by most IEX functions.
+#'
+list_to_df <- function(content) {
+  bind <- function(...) {
+    rbind.data.frame(..., stringsAsFactors=F)
+  }
+
+  do.call(bind, content)
+}
+
+# Reference Data --------------------------------------------------------------
+
+#' Returns information about companies listed on the IEX exchange.
+#' NOTE: Only 4 companies are returned so far (and 2 of these appear to be
+#' tests).
+#'
+#' @export
+iex_listed_symbols <- function(simplify=TRUE) {
+  response <- iex_api("ref-data/daily-list/symbol-directory")
+  if (!simplify) {return(response)}
+
+  list_to_df(response$content)
+}
+
+#' Returns a list of all stock symbols traded on the IEX exchange.
+#'
+#' @param simplify Set to FALSE to get the raw API response.  When TRUE
+#'        (the default) we simplify the result to a data.frame
+#' @response A data frame containing the following columns:
+#'          symbol - Stock symbol
+#'          name - Stock name
+#'          date - Most recent date (?)
+#'          isEnabled
+#'          type - "cs" = "common stock"
+#'          iexId - Unique ID for the stock on the IEX exchange
+#' @export
+iex_traded_symbols <- function(simplify=TRUE) {
+  response <- iex_api("ref-data/symbols")
+  if (!simplify) {return(response)}
+
+  list_to_df(response$content)
+}
+
+# Stocks ----------------------------------------------------------------------
+
+#' Returns information about the company.  This returns a list.
+#' NOTE: We cannot simplify this list into a data.frame because some of the
+#' fields (like 'tags' contain sub-lists that get replicated when we do this)
+#'
+#' @export
+iex_company_info <- function(symbol) {
+  response <- iex_api(paste0("stock/", symbol, "/company"))
+  response
+}
+
+#' Returns all dividends declared by a company over a given timeframe. The
+#' default time frame is 5 years.
+#'
+#' @export
+iex_dividends <- function(symbol, timeframe="5y", simplify=TRUE) {
+  response <- iex_api(paste0("stock/", symbol, "/dividends/", timeframe))
+  if (!simplify) {return(response)}
+
+  list_to_df(response$content)
+}
+
+#' Returns all splits declared by a company over a given timeframe. The
+#' default time frame is 5 years.
+#'
+#' @export
+iex_splits <- function(symbol, timeframe="5y", simplify=TRUE) {
+  response <- iex_api(paste0("stock/", symbol, "/splits/", timeframe))
+  if (!simplify) {return(response)}
+
+  list_to_df(response$content)
+}
+
+#' Returns historical chart data for the stock
+#'
+#' @export
+iex_chart <- function(symbol, timeframe="5y", query=NULL, simplify=TRUE) {
+  response <- iex_api(paste0("stock/", symbol, "/chart/", timeframe), query)
+  if (!simplify) {return(response)}
+
+  list_to_df(response$content)
+}
+
+#' Returns key statistics for the given stock
+#'
+#' @export
+iex_stock_stats <- function(symbol, simplify=TRUE) {
+  response <- iex_api(paste0("stock/", symbol, "/stats"))
+  if (!simplify) {return(response)}
+
+  response$content  # not much more we can do besides this
+}
+
+# This returns 15 minute delayed and 30 day average consolidated volume
+# percentage of a stock, by market. This call will always return 13 values,
+# and will be sorted in ascending order by current day trading volume
+# percentage.
+#
+#' @export
+iex_volume_by_venue <- function(symbol, simplify=TRUE) {
+  response <- iex_api(paste0("stock/", symbol, "/volume-by-venue"))
+  if (!simplify) {return(response)}
+
+  #list_to_df(response$content)  # not sure why this isn't working...
+  df <- as.data.frame(do.call(rbind, response$content), stringsAsFactors=F)
+  df$volume <- as.numeric(df$volume)
+  df$venue <- as.character(df$venue)
+  df$venueName <- as.character(df$venueName)
+  df$marketPercent <- as.numeric(df$marketPercent)
+  df$avgMarketPercent <- as.numeric(df$avgMarketPercent)
+  df$date <- as.character(df$date)
+  df
+}
+
 
 # TOPS --------------------------------------------------------------------
 
