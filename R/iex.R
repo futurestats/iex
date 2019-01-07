@@ -48,10 +48,52 @@ print.iex_api <- function(x, ...) {
   invisible(x)
 }
 
+#' converts a list of atomic values to a 1-row data.frame
+row_to_df <- function(content) {
+
+  replace_null <- function(x) {
+    ifelse(is.null(x), NA, x)
+  }
+
+  convert_row <- function(row) {
+    lapply(row, replace_null)
+  }
+
+  content <- convert_row(content)
+  as.data.frame(content, stringsAsFactors=F)
+}
+
 #' Converts a list of lists to a data.frame. This helps parse the typical
 #' response$content list returned by most IEX functions.
 #'
-list_to_df <- function(content) {
+list_to_df <- function(content, ensure_columns=NULL) {
+
+  replace_null <- function(x) {
+    ifelse(is.null(x), NA, x)
+  }
+
+  convert_row <- function(row) {
+    lapply(row, replace_null)
+  }
+
+  # we have to replace NULLs with NAs or else get the error:
+  # 'arguments imply differing number of rows: 1, 0'
+  content <- lapply(content, convert_row)
+
+  # ensure that each row at least has these columns
+  if (!is.null(ensure_columns)) {
+
+    convert_row <- function(row) {
+      missing_cols <- setdiff(ensure_columns, names(row))
+      for (col in missing_cols) {
+        row[[col]] <- NA
+      }
+      row
+    }
+
+    content <- lapply(content, convert_row)
+  }
+
   bind <- function(...) {
     rbind.data.frame(..., stringsAsFactors=F)
   }
@@ -77,7 +119,7 @@ iex_listed_symbols <- function(simplify=TRUE) {
 #'
 #' @param simplify Set to FALSE to get the raw API response.  When TRUE
 #'        (the default) we simplify the result to a data.frame
-#' @response A data frame containing the following columns:
+#' @return A data frame containing the following columns:
 #'          symbol - Stock symbol
 #'          name - Stock name
 #'          date - Most recent date (?)
@@ -99,9 +141,11 @@ iex_traded_symbols <- function(simplify=TRUE) {
 #' fields (like 'tags' contain sub-lists that get replicated when we do this)
 #'
 #' @export
-iex_company_info <- function(symbol) {
+iex_company_info <- function(symbol, simplify=TRUE) {
   response <- iex_api(paste0("stock/", symbol, "/company"))
-  response
+  if (!simplify) {response}
+
+  response$content
 }
 
 #' Returns all dividends declared by a company over a given timeframe. The
@@ -113,6 +157,30 @@ iex_dividends <- function(symbol, timeframe="5y", simplify=TRUE) {
   if (!simplify) {return(response)}
 
   list_to_df(response$content)
+}
+
+#' Returns earnings data from the four most recent reported quarters.
+#'
+#' @export
+iex_earnings <- function(symbol, simplify=TRUE) {
+  response <- iex_api(paste0("stock/", symbol, "/earnings"))
+  if (!simplify) {return(response)}
+
+  list_to_df(response$content$earnings)
+}
+
+#' Pulls income statement, balance sheet, and cash flow data from the four most
+#' recent reported quarters or years
+#'
+#' @export
+iex_financials <- function(symbol, period=c("quarter", "annual"), simplify=TRUE) {
+  query = list(
+    period = match.arg(period)
+  )
+  response <- iex_api(sprintf("stock/%s/financials", symbol), query)
+  if (!simplify) {return(response)}
+
+  list_to_df(response$content$financials)
 }
 
 #' Returns all splits declared by a company over a given timeframe. The
@@ -133,7 +201,9 @@ iex_chart <- function(symbol, timeframe="5y", query=NULL, simplify=TRUE) {
   response <- iex_api(paste0("stock/", symbol, "/chart/", timeframe), query)
   if (!simplify) {return(response)}
 
-  list_to_df(response$content)
+  list_to_df(response$content,
+             c("date", "open", "high", "low", "close", "volume", "unadjustedVolume",
+               "change", "changePercent", "vwap", "label", "changeOverTime"))
 }
 
 #' Returns key statistics for the given stock
@@ -146,6 +216,61 @@ iex_stock_stats <- function(symbol, simplify=TRUE) {
   response$content  # not much more we can do besides this
 }
 
+#' An array of peer tickers as defined by IEX. This is not intended to
+#' represent a definitive or accurate list of peers, and is subject to
+#' change at any time.
+#'
+#' @export
+iex_stock_peers <- function(symbol, simplify=TRUE) {
+  response <- iex_api(sprintf("stock/%s/peers", symbol))
+  if (!simplify) {return(response)}
+
+  as.character(response$content)
+}
+
+#' This returns previous day adjusted price data for a single stock.
+#'
+#' @export
+iex_stock_previous <- function(symbol, simplify=TRUE) {
+  response <- iex_api(sprintf("stock/%s/previous", symbol))
+  if (!simplify) {return(response)}
+
+  row_to_df(response$content)
+}
+
+#' This returns previous day adjusted price data for all stocks traded on IEX.
+#'
+#' @export
+iex_market_previous <- function(simplify=TRUE) {
+  response <- iex_api("stock/market/previous")
+  if (!simplify) {return(response)}
+
+  #list_to_df(response$content)  # doesn't work
+  response$content
+}
+
+#' Similar to the peers endpoint, except this will return most active market
+#' symbols when peers are not available.
+#'
+#' @export
+iex_stock_relevant <- function(symbol, simplify=TRUE) {
+  response <- iex_api(sprintf("stock/%s/relevant", symbol))
+  if (!simplify) {return(response)}
+
+  as.character(response$content$symbols)
+}
+
+#' This returns an array of each sector and performance for the current trading
+#' day. Performance is based on each sector ETF.
+#'
+#' @export
+iex_sector_performance <- function(simplify=TRUE) {
+  response <- iex_api("stock/market/sector-performance")
+  if (!simplify) {return(response)}
+
+  list_to_df(response$content)
+}
+
 # This returns 15 minute delayed and 30 day average consolidated volume
 # percentage of a stock, by market. This call will always return 13 values,
 # and will be sorted in ascending order by current day trading volume
@@ -156,15 +281,7 @@ iex_volume_by_venue <- function(symbol, simplify=TRUE) {
   response <- iex_api(paste0("stock/", symbol, "/volume-by-venue"))
   if (!simplify) {return(response)}
 
-  #list_to_df(response$content)  # not sure why this isn't working...
-  df <- as.data.frame(do.call(rbind, response$content), stringsAsFactors=F)
-  df$volume <- as.numeric(df$volume)
-  df$venue <- as.character(df$venue)
-  df$venueName <- as.character(df$venueName)
-  df$marketPercent <- as.numeric(df$marketPercent)
-  df$avgMarketPercent <- as.numeric(df$avgMarketPercent)
-  df$date <- as.character(df$date)
-  df
+  list_to_df(response$content)  # not sure why this isn't working...
 }
 
 
